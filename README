@@ -1,0 +1,130 @@
+Nume Prenume: Baran Denis-Constantin 
+Grupa: 322CC
+Tema 1 PCOM
+
+Tema a fost facuta integral pe baza scheletului de la laboratorul 4, drept 
+urmare, am lasat enunturile de la TODO urile din acel laborator drept un ghid
+de urmat in realizarea cerintei de forwarding cat si pentru celelalte.
+Stilul de scris pentru parsarea headere lor a fost pastrat alaturi de
+logica de functionare a routerului
+
+[Cerinta 1 - Forwarding]
+Pentru a realiza procesul de forawrding al routerului a fost de ajutor
+laboratorul. Am parsat tabela de rutare statica read_rtable vazuta in 
+include/lib.h. Ulterior aceasta este restocata intr-un Hashtable pentru a putea
+realiza Longest Prefix Match (LPM) eficient. (mai multe am explicat in 
+sectiunea 2). Tabela arp este alocata dinamic si initializam coada q folosind
+functia queue_create(). Intr-o bucla while(1) , primim pachetul cu recv_from_any_link
+parsam bufferul pachetului in ethernet header (eth_hdr) si ip header (ip_hdr),
+stiind ca sunt unul dupa altul ca in laborator (eth_hdr = buf iar 
+ip_hdr = buf + sizeof(struct ether_hdr)) pentru ca stim ca sunt unul dupa altul in memorie
+(exact ca in laboratorul 4)
+
+Acceptam numai pachete de tip arp si ipv4, pe restul le ignoram. 
+Vom calcula checksum ul sa vedem daca pachetul nu a fost corupt, altfel ii 
+dam drop. Daca primim un echo request catre router trimitem un echo reply (mai 
+ulte am explicat in sectiunea de ICMP). Altfel ii vom cauta LPM ul. Daca nu 
+gasim adresa in tabela de rutare, vom trimite un pachet icmp de tip eroare
+(Destination Unreachable). Altfel daca ttl este mai mic ca 1 inseamna ca la
+acest hop va expira si trimitem un pachet eroare de tip "TTL expired". Cautam
+apoi adresa  mac asociata ip ului in tabela arp iar daca nu gasim un mac
+asociat, trimitem o cerere arp de tip broadcast pentru a afla mac ul asociat
+ip ului. (ca urmare nu putem trimite pachetul si il salvam in coada q pentru a
+il putea trimite mai tarziu). Daca in schimb, toate aceste cerinte au fost
+indeplinite, trimitem pachetul la urmatorul hop prin send_to_link (functie care
+fata de laboratorul 4 si-a schimbat antetul, acum are lungimea ca fiind primul
+argument) si astfel realizam procesul de forwarding.
+
+
+[subiect1.png] - in acest screenshot am surprins functionalitate de forwarding
+si faptul ca se trimite un packet de la un host la altul (se trimite un ping 
+request si un reply). De pe host1 a trimis ping uri catre host2 folosind 
+comanda "ping h2" (varianta scurta). In acelasi terminal este numele meu iar
+in partea stanga, in wireshark se poate vedea ca s-au primit 3 reply uri 
+pentru cele 3 request uri (am dat eu ctrl c dupa ce s-au trimis 3 ping request
+-uri).
+
+[Cerinta 2 - Longest Prefix Match]
+Pentru a realiza implementarea eficient a LPM ului, am creat o structura 
+care reprezinta o intreare intr-un hashtable. Structura cuprinde un vector
+entrie de prefixe care este alocat dinamic si isi dubleaza capacitatea cand 
+se umple. IN acesta se stocheaza prefixe din rtable. Hashtable ul cuprinde
+33 de intrari (de la 0 la 32 de masti). Functia "de hash" reprezinta cati biti
+de 1 are masca (mastile sunt deci key in hashtable), numarul acestor fiind
+identificat prin operatii de & cu 1U << 31 adica facem 1 pe masca cu o alta 
+masca care are cel mai semnificativ bit setat pe 1 pentru ai putea numara
+In functia init_route_table, calculam lungimea pentru fiecare masca si 
+stocam in vectorul entrie prefixele pentru lungimea mastii calculate. Scopul
+este ca apoi sa sortam acest vector "entries" de prefixe folosind qsort ca sa
+putem realiza binary search pe acesta. Am creat comparatorul compare_prefixes
+care compara 2 prefixe si in functia get_best_route, cautam in acesta structura
+adresa de retea obtinuta prin operatia de "&" logic intre ip si masca
+pentru masca corespunzatoare (pornim de la cea mai mare masca cu 32 de biti de 
+1 pentru a putea determina cea mai specifica potrivire). Folosim functia 
+bsearch si daca gasim un match il returnam. Worst case o sa comparam toate cele
+32 de masti si daca am avea toate intrarile in acea masca obtine complexitate
+de O(32 * log n) care este mai buna si eficienta decat cautarea liniara.
+
+[Cerinta 3 - Protoculul ARP]
+In cazul in care, in main nu gasim o asociere intre ip si adresa mac (deci daca
+nu gasim o intrare  in tabela noastra arp) atunci salvam acest pachet in coada
+de pachete q, si trimitem un arp_request cu ajutorul functiei "send_arp_request"
+care parseaza bufferul il transforma intr-un pachet arp request (transforma 
+arp_header ca in structura determinata in cerinta https://pcom.pages.upb.ro/tema1/arp.html)
+si trimite acesta cerere. Am creat o structura de tip "pachet" care contine 
+packetul efectiv (copie a bufferului buf), lungimea acestuia (len) si intrarea 
+gasita in tabela de routare (entry) pentru a putea trimite direct pachetul si a
+nu  fi nevoie sa mai recalculam aceste date cand vom afla mac ul. In acest caz
+dam drop la pachet pentru ca l-am salvat deja in coada q.
+Daca primim asadar un arp request, va trebui sa raspundem cu un arp_reply.
+Folosind functia handle_arp_requests, transforma un packet arp parsand header
+de ethernet si headerul arp (eth_hdr si arp_hdr), interschimba adresele ip
+si mac, salvam mac ul nostru in in ethr_shost si retrimitem pachetul cu codul 2
+acesta reprezentand codul pentru reply conform standardului iana
+ https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml
+Daca primim un arp reply atunci putem salva acesta asociere intre ip si mac in 
+tabela noastra arp (arp_table) si acum putem trimite pachetele din coada. 
+Am facut o functie pentru a calcula lungimea unei cozi (queue_size) pentru a 
+putea parcurge exact atatea pachete trebuie trimise (trebuie sa evit infinite
+loop pentru ca daca gasesc pachete care nu asteapta intrarea mea mac, le pun 
+inapoi in coada q). Deci parcurgand acesta q, trimit fiecare pachet care
+astepta mac ul destinatie si le scot din coada.
+
+[subiect3.png] - in acest screenshot am surprins functionalitatea de arp
+request si reply. Am aflat adresa interfetei r-0 pe care stim ca este conectata
+interfata h0. Folosind comanda "arping 192.168.0.1" pe interfata h0 se poate
+vedea ca wireshark a capturat 3 cereri arp trimise. Se poate observa cum
+routerul a raspuns cu un arp reply la acesta cerere. Pentru [subiect1.png]
+pentru ca hosturile sa poata comunica intre ele, se poate observa ca routerul
+a facut arp caching pentru a retine adresa mac a hostului destinatie h2 pentru
+a se putea trimite ping request si ping reply cu succes intre cele 2 hosturi.
+(acum adresa macului destinatie h2 este asociata ip ului si salvata in tabela 
+arp a routerului si deci a doua oara cand s-a facut ping, s-a facut ping direct
+si nu a mai fost nevoie sa se trimite din nou un alt arp request)
+
+[Cerinta 4 - ICMP]
+Pentru a realiza aceasta cerinta am gestionat 3 cazuri. Daca primim o cerere
+echo request catre router, vom trimite un pachet ICMP de tip echo reply catre
+detinatar. Acesta contine exact acelasi payload de la pachetul original dar 
+schimbarea consta in modificarea headerului ip si a celui de ethernet (pentru 
+ca interschimbam sursa si destinatia) si construirea headerului icmp 
+cu tipul specific, campul code setat la 0 (este deja setat pentru ca am folosit
+memset(icmp_hdr, 0, sizeof(icmp_hdr))) la inceput, si checksum ul aferent
+Celelalte 2 cazuri apar in cazul in care nu gasim o intrare in tabela de rutare
+sau cand TTL ul pachetului expira. In acest cazi pachetul nostru nu mai contine
+acelasi payload ca cel original ci doar primi 64 de biti ai pachetului original
+adica primi 8 bytes din payload ul respectiv.
+https://pcom.pages.upb.ro/tema1/icmp.html
+Diferenta intre TTL Expired si Dest Unreachable consta doar in schimbarea
+tipului (11 pentru TTL Expired si 3 pentru Dest Unreachable), si am creat o 
+functie unica care construieste un pachetul icmp pe baza bufferului primit
+si a interfetei.
+
+[subiect4.png] - in screenshot este prezentat un pachet icmp de tip Time-to-
+live Exceeded capturat de wireshark. A fost obtinut prin comanda "ping -t 1 h2"
+data in interfata h1. Functionalitatea este corecta pentru ca routerul 
+a surprins pachetul avand campul ttl <= 1 si deci a trimis un pachet icmp
+corespunzator. Pachetul icmp pentru Destination Unreachable are acelasi format
+pentru ca singura diferenta este tipul acestuia iar pentru router_icmp, atunci 
+cand se da ping efectiv la router, acesta raspunde cu un echo reply normal ca
+in [subiect1.png]
